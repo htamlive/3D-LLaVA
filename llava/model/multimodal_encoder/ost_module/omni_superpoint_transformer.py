@@ -106,6 +106,7 @@ class OmniSuperPointTransformer(nn.Module):
         x = voxel_feats[p2v_map]
         x_pos = self.pos_encode(xyz_all)
         # get superpoint features from point features
+        # IMPORTANT: pooling
         with torch.cuda.amp.autocast(enabled=False):
             x = scatter(x.float(), sp_pts_masks.long(), reduce="mean", dim=0)
             x_pos = scatter(x_pos.float(), sp_pts_masks.long(), reduce="mean", dim=0)

@@ -104,10 +104,14 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         
         condition = conditions[0]
         assert condition == "refer_seg"
+
+        # IMPORTANT
         seg_embeds = [self.get_hidden_seg_fc()(emb) for emb in seg_hidden_state]
         features_for_seg = mask_input_dict["sp_features"]
         hidden_states_for_seg = mask_input_dict["hidden_states"]
 
+
+        # IMPORTANT: MaskDecoder_SA_Only
         pred_dict = self.get_mask_decoder()(seg_embeds, features_for_seg, hidden_states_for_seg)
 
         assert len(pred_dict['masks']) == 1
@@ -350,6 +354,8 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         else:
             inputs_embeds = self.get_model().embed_tokens(inputs)
 
+
+        # IMPORTANT: generate with [SEG] token
         outputs = super().generate(
             position_ids=position_ids,
             attention_mask=attention_mask,

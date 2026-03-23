@@ -45,6 +45,8 @@ class LlavaMetaModel:
                     )
         
         if hasattr(config, "mm_pointcloud_tower"):
+
+            # IMPORTANT: pointcloud tower: SPConvPointCloudTower
             self.pointcloud_tower = build_pointcloud_tower(config, delay_load=True)
             self.mm_projector = build_vision_projector(config)
 
@@ -238,10 +240,13 @@ class LlavaMetaForCausalLM(ABC):
     def encode_pointclouds(
         self, coord, grid_coord, offset, feat, p2v_map, v2p_map, spatial_shape, superpoint_mask, prompt_mask
         ):
+
+        # IMPORTANT: sampling
         sampled_features, prompt_features, superpoint_features, mask_input_dict = self.get_model().get_pointcloud_tower()(
             coord, grid_coord, offset, feat, p2v_map, v2p_map, spatial_shape, superpoint_mask, prompt_mask
         )
 
+        # IMPORTANT: extract features
         pointcloud_tokens = [self.get_model().mm_projector(feat) for feat in sampled_features]
         prompt_tokens = [self.get_model().mm_projector(feat) for feat in prompt_features]
     
@@ -276,6 +281,7 @@ class LlavaMetaForCausalLM(ABC):
         prompt_tokens = torch.cat(prompt_tokens, dim=0)
 
         # get segmentation token index, shift 1 token since the prediciton is the next token
+        # IMPORTANT: [SEG] token
         seg_token_mask = input_ids[:, 1:] == self.config.seg_token_idx
         seg_token_mask = torch.cat(
             [
@@ -328,7 +334,13 @@ class LlavaMetaForCausalLM(ABC):
                 cur_image_idx += 1
                 continue
 
+
+
+            # IMPORTANT: insert point cloud tokens and prompt tokens into the input sequence according to the position of special tokens (e.g., [IMAGE], [LOC])
+            # Visual tokens
             image_token_indices = torch.where(cur_input_ids == IMAGE_TOKEN_INDEX)[0].tolist()
+
+            # Prompt tokens
             prompt_token_indices = torch.where(cur_input_ids == LOC_TOKEN_INDEX)[0].tolist()
             special_token_indices = sorted(image_token_indices + prompt_token_indices)
             special_tokens = [cur_input_ids[indice] for indice in special_token_indices]

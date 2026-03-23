@@ -48,6 +48,8 @@ class SPConvPointCloudTower(nn.Module):
         config_path = current_dir / 'configs' / f'{config_name}.py'
         cfg = load_config(config_path)
 
+
+        # IMPORTANT: OmniSuperPointTransformer
         self.segmentor = build_model(cfg.model)
 
         self.load_segmentor_weights()
@@ -119,9 +121,12 @@ class SPConvPointCloudTower(nn.Module):
             superpoint_mask=superpoint_mask,
         )
         
+        # IMPORTANT: sampling
         topk_query_feat, topk_query_coord, aligned_sp_feat, sp_feature, sp_xyz, hidden_states = self.segmentor(segmentor_input_dict, num_topk=self.num_pc_tokens)
         
         prompt_feature = self.visual_sampler(prompt_mask, hidden_states, sp_xyz)
+
+        # IMPORTANT: align head
         prompt_feature = [self.alignment_proj(ff) for ff in prompt_feature]
         
         mask_input_dict = {

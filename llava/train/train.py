@@ -1002,6 +1002,8 @@ class DataCollatorForSupervisedDataset(object):
                                                  padding_value=IGNORE_INDEX)
         input_ids = input_ids[:, :self.tokenizer.model_max_length]
         labels = labels[:, :self.tokenizer.model_max_length]
+
+        # IMPORTANT: prepare attention masks
         batch = dict(
             input_ids=input_ids,
             labels=labels,

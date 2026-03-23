@@ -148,6 +148,7 @@ def eval_model(args):
 
         qs = template[0].replace("<pc>", DEFAULT_IMAGE_TOKEN)
 
+        # conversation templates
         conv = conv_templates[args.conv_mode].copy()
         conv.append_message(conv.roles[0], qs)
         conv.append_message(conv.roles[1], None)
