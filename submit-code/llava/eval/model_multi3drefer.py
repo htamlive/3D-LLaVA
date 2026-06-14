@@ -1,17 +1,17 @@
 import argparse
 import torch
 import os
-import copy
 import json
 from tqdm import tqdm
 import shortuuid
+import csv
 
 from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN, DEFAULT_LINK_TOKEN
 from llava.conversation import conv_templates, SeparatorStyle
 from llava.model.builder import load_pretrained_model
 from llava.utils import disable_torch_init
 from llava.mm_utils import tokenizer_image_token, process_images, get_model_name_from_path
-from llava.pc_utils import densecap_transform_eval, Compose
+from llava.pc_utils import referseg_transform_eval, Compose
 from PIL import Image
 from llava.mm_utils import tokenizer_special_token
 import math
@@ -21,13 +21,10 @@ from llava.train.train import DataCollatorForSupervisedDataset
 from pointgroup_ops import voxelization_idx
 from typing import Dict, Optional, Sequence, List
 
-from collections import defaultdict, OrderedDict
 
-
-template = [
-    "<pc>\nDescribe this object <loc> in the given 3D scene."
+templates = [
+    "<image>\n Please output the segmentation mask according to the following description. \n{description}\nThere may be no corresponding object, or there may be one or more objects."
 ]
-
 
 def split_list(lst, n):
     """Split a list into n (roughly) equal-sized chunks"""
@@ -89,46 +86,50 @@ def eval_model(args):
     model_path = os.path.expanduser(args.model_path)
     model_name = get_model_name_from_path(model_path)
     tokenizer, model, _, _ = load_pretrained_model(model_path, args.model_base, model_name, pointcloud_tower_name=args.pointcloud_tower_name)
-    
-    # eval info
-    with open(args.question_file, "rb") as f:
-        questions = json.load(f)
 
+    if "json" in args.question_file:
+        with open(args.question_file, 'r') as f:
+            questions = json.load(f)
+    elif "csv" in args.question_file:
+        with open(args.question_file, "r") as f:
+            csv_data = csv.DictReader(f)
+            questions = []
+            for ref in csv_data:
+                questions.append(ref)
+        
     questions = get_chunk(questions, args.num_chunks, args.chunk_idx)
-
     answers_file = os.path.expanduser(args.answers_file)
     os.makedirs(os.path.dirname(answers_file), exist_ok=True)
     ans_file = open(answers_file, "w")
 
     record = dict()
-    for idx, source in tqdm(enumerate(questions), total=len(questions)):
-        scan_file = source["scene_id"]
-        pred_id = source["pred_id"]
-        
+    for idx, source in enumerate(tqdm(questions)):
+        if "scene_id" in source:
+            scan_file = source['scene_id']
+        else:
+            scan_file = source["scan_id"]
+            
         scan_folder = args.scan_folder
-        scan_data_path  = pathlib.Path(scan_folder) / 'val' / f'{scan_file}.pth'
-        superpoint_path = pathlib.Path(scan_folder) / 'super_points' / f'{scan_file}.bin'
+        scan_data_path  = pathlib.Path(scan_folder) / f'{scan_file}.pth'
+        superpoint_path = pathlib.Path(scan_folder) / '../super_points' / f'{scan_file}.bin'
 
         raw_data = torch.load(scan_data_path)
         coord = raw_data['coord']
         color = raw_data['color']
         superpoint_mask = np.fromfile(superpoint_path, dtype=np.int64)
 
-        pred_mask_path = pathlib.Path(args.mask3d_inst_folder) / f'{scan_file}.pt'
-        fg_mask_ind = torch.load(pred_mask_path)[pred_id]['segments']
-        fg_mask_ind = np.array(fg_mask_ind)
-        instance = np.zeros(coord.shape[0])
-        instance[fg_mask_ind] = 1
-        instance = instance.astype(bool)
+        instance = raw_data['instance_gt']
+        object_ids = source["object_ids"]
+        object_ids = [int(obj) for obj in object_ids]
+
+        gt_mask = np.isin(instance, object_ids)
 
         # data transformation
-        transform = Compose(densecap_transform_eval)
+        transform = Compose(referseg_transform_eval)
         pc_data_dict = dict(
-            scene_id=scan_file,
             coord=coord,
             color=color,
-            instance=instance,
-            superpoint_mask=superpoint_mask,
+            superpoint_mask=superpoint_mask
         )
         pc_data_dict = transform(pc_data_dict)
 
@@ -143,12 +144,16 @@ def eval_model(args):
         voxel_coords, p2v_map, v2p_map = voxelization_idx(grid_coords, batch_size, 4)
 
         for key in pc_data_dict:
-            if key in ["coord", "grid_coord", "feat", "offset", "obj_click", "obj_sp_mask"]:
+            if key in ["coord", "grid_coord", "feat", "offset"]:
                 pc_data_dict[key] = ponder_collate_fn([pc_data_dict[key]])
 
-        qs = template[0].replace("<pc>", DEFAULT_IMAGE_TOKEN)
+        if "description" in source:
+            qs = source['description']
+        else:
+            qs = source['utterance']
 
-        # conversation templates
+        qs = templates[0].format(description=qs)
+
         conv = conv_templates[args.conv_mode].copy()
         conv.append_message(conv.roles[0], qs)
         conv.append_message(conv.roles[1], None)
@@ -163,17 +168,14 @@ def eval_model(args):
         p2v_map = p2v_map.to(device)
         v2p_map = v2p_map.to(device)
         superpoint_mask = [torch.tensor(superpoint_mask).to(device)]
-        obj_click = pc_data_dict["obj_click"].to(device, dtype=torch.bfloat16) # (num_obj_click, 3)
-        obj_click = obj_click.unsqueeze(0)
-        obj_sp_mask = [pc_data_dict["obj_sp_mask"].to(device)] # list of (num_obj_click, num_superpoint), bool
         
+        # move input tensors to gpu, defaut type is supposed to be bfloat16
         with torch.inference_mode():
-            output_ids = model.generate(
+            pred_mask = model.generate(
                 input_ids,
-                click=obj_click,
-                click_mask=obj_sp_mask,
                 # images=image_tensor.unsqueeze(0).half().cuda(),
                 # image_sizes=[image.size],
+                click_mask=[[]],
                 coord=coord,
                 grid_coord=voxel_coords,
                 offset=offset,
@@ -185,7 +187,7 @@ def eval_model(args):
                 conditions=[pc_data_dict["condition"]],
                 # do_sample=True if args.temperature > 0 else False,
                 do_sample=False,
-                num_beams=5,
+                num_beams=1,
                 min_length=1,
                 no_repeat_ngram_size=3,
                 temperature=1.0,
@@ -193,17 +195,37 @@ def eval_model(args):
                 tokenizer=tokenizer,
                 use_cache=True)
 
-        outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
-        ans_id = shortuuid.uuid()
-        
-        ans_file.write(json.dumps({"scene_id": scan_file,
-                                   "pred_id": pred_id,
-                                   "gt_id": source["obj_id"],
-                                   "prompt": prompt,
-                                   "text": outputs,
-                                   "answer_id": ans_id,
+        pred_mask = pred_mask.cpu().numpy().astype(bool)[0]
+        gt_mask = gt_mask.astype(bool)
+
+        if np.sum(gt_mask) > 0:
+            I = np.sum(np.logical_and(pred_mask, gt_mask))
+            U = np.sum(np.logical_or(pred_mask, gt_mask))
+            iou = float(0) if U == 0 else float(I) / float(U)
+        else:
+            if np.sum(pred_mask) > 0:
+                iou = float(0)
+            else:
+                iou = float(1)
+
+        if iou >= 0.25:
+            tp25 = 1
+        else:
+            tp25 = 0
+
+        if iou >= 0.5:
+            tp50 = 1
+        else:
+            tp50 = 0    
+
+        ans_file.write(json.dumps({"question_id": idx,
+                                   "prompt": qs,
                                    "model_id": model_name,
-                                   "metadata": {}}) + "\n")
+                                   "iou": iou,
+                                   "tp50": tp50,
+                                   "tp25": tp25
+                                   }) + "\n")
+
         ans_file.flush()
     ans_file.close()
 
@@ -214,7 +236,6 @@ if __name__ == "__main__":
     parser.add_argument("--model-base", type=str, default=None)
     parser.add_argument("--pointcloud-tower-name", type=str, default=None)
     parser.add_argument("--scan-folder", type=str, default="")
-    parser.add_argument("--mask3d-inst-folder", type=str, default="")
     parser.add_argument("--question-file", type=str, default="tables/question.jsonl")
     parser.add_argument("--answers-file", type=str, default="answer.jsonl")
     parser.add_argument("--conv-mode", type=str, default="llava_v1")
@@ -223,6 +244,7 @@ if __name__ == "__main__":
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--top_p", type=float, default=None)
     parser.add_argument("--num_beams", type=int, default=1)
+    parser.add_argument("--data_version", type=str, default="v0")
     args = parser.parse_args()
 
     eval_model(args)

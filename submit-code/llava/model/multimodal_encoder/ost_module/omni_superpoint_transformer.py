@@ -85,7 +85,6 @@ class OmniSuperPointTransformer(nn.Module):
         compute_dtype = feats.dtype
         
         with torch.cuda.amp.autocast(enabled=False):
-            # IMPORTANT: voxelization, this will aggregate the point features using mean
             voxel_feats = voxelization(feats.float(), v2p_map)
             voxel_input = spconv.SparseConvTensor(
                 features=voxel_feats,
@@ -105,11 +104,11 @@ class OmniSuperPointTransformer(nn.Module):
         # get point features from voxel features
         p2v_map = input_dict["p2v_map"].long()
         x = voxel_feats[p2v_map]
-        x_pos = self.pos_encode(xyz_all) # (n_points, n_channels)
+        x_pos = self.pos_encode(xyz_all)
         # get superpoint features from point features
         # IMPORTANT: pooling
         with torch.cuda.amp.autocast(enabled=False):
-            x = scatter(x.float(), sp_pts_masks.long(), reduce="mean", dim=0) # (n_superpoints, n_channels)
+            x = scatter(x.float(), sp_pts_masks.long(), reduce="mean", dim=0)
             x_pos = scatter(x_pos.float(), sp_pts_masks.long(), reduce="mean", dim=0)
             sp_xyz = scatter(xyz_all.float(), sp_pts_masks.long(), reduce="mean", dim=0)
             x = x + x_pos
@@ -368,7 +367,7 @@ class OmniSuperPointTransformer(nn.Module):
         sp_pts_mask_list = []
         sp_batch_offsets = [0]
         for i in range(batch_size):
-            sp_pts_mask = input_dict["superpoint_mask"][i] # (n_points_i,)
+            sp_pts_mask = input_dict["superpoint_mask"][i]
             sp_pts_mask += superpoint_bias
             superpoint_bias += len(sp_pts_mask.unique())
             # superpoint_bias = sp_pts_mask.max().item() + 1

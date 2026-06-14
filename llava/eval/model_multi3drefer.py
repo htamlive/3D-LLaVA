@@ -141,6 +141,9 @@ def eval_model(args):
         batch_size = 1
         grid_coords = pc_data_dict["grid_coord"]
         spatial_shape = np.clip((grid_coords.max(0)[0][1:] + 1).numpy(), 128, None)  # long [3]
+
+
+        # IMPORTANT: voxelization_idx will sort the voxel coords, which is important for the subsequent sparse conv
         voxel_coords, p2v_map, v2p_map = voxelization_idx(grid_coords, batch_size, 4)
 
         for key in pc_data_dict:

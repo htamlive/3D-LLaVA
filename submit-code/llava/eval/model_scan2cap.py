@@ -163,9 +163,9 @@ def eval_model(args):
         p2v_map = p2v_map.to(device)
         v2p_map = v2p_map.to(device)
         superpoint_mask = [torch.tensor(superpoint_mask).to(device)]
-        obj_click = pc_data_dict["obj_click"].to(device, dtype=torch.bfloat16) # (num_obj_click, 3)
+        obj_click = pc_data_dict["obj_click"].to(device, dtype=torch.bfloat16)
         obj_click = obj_click.unsqueeze(0)
-        obj_sp_mask = [pc_data_dict["obj_sp_mask"].to(device)] # list of (num_obj_click, num_superpoint), bool
+        obj_sp_mask = [pc_data_dict["obj_sp_mask"].to(device)]
         
         with torch.inference_mode():
             output_ids = model.generate(
